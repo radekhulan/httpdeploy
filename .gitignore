@@ -1,0 +1,9 @@
+# Local secrets / per-environment config (never committed, never deployed)
+config.php
+.deploy-token
+.deploy-url
+
+# Editor / tooling
+.source/
+.claude/
+publish.cmd
