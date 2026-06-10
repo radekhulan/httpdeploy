@@ -1,276 +1,6 @@
 # HTTPDeploy
 
-**A minimal HTTP-based deploy tool for restricted hosting.**
-
-HTTPDeploy is a *last-resort* deployment solution for cheap or locked-down
-hosting that offers **no SSH, no Git, no CI/CD and cannot reach out to GitHub** —
-the kind of shared hosting where your only real channel to the server is HTTP(S)
-and maybe FTP.
-
-The idea is simple:
-
-1. On your **local machine** you run `production.ps1` (Windows) or
-   `production.sh` (Linux/macOS). It packs your project into a `tar.gz` and
-   `POST`s it to the server over HTTPS.
-2. On the **server**, a single file — `deploy.php` — receives the package,
-   unpacks it into the web root, and (optionally) runs your SQL migrations.
-
-No build agents, no SSH keys on the host, no outbound connections from the
-server. Your local machine pushes; the server unpacks.
-
-> ⚠️ This is a pragmatic workaround, not a replacement for a proper CI/CD
-> pipeline. If your hosting supports SSH + Git, use that instead.
-
----
-
-## How it works
-
-```
-   ┌─────────────────────┐         HTTPS POST          ┌──────────────────────┐
-   │   Local machine     │   package.tar.gz  ───────▶  │       Server         │
-   │                     │   X-Deploy-Token: …         │                      │
-   │  production.ps1/sh  │   migrate=1                 │      deploy.php      │
-   │   • git diff        │   delete=…                  │   • verify IP+token  │
-   │   • pack tar.gz     │                             │   • unpack to root   │
-   │   • curl upload     │  ◀───────  plain-text resp  │   • run migrations   │
-   └─────────────────────┘                             └──────────────────────┘
-```
-
-* The client never trusts the server to fetch anything — it sends the bytes.
-* The server authenticates the request by **IP allow-list** (optional) and a
-  **shared token**, then unpacks the archive into the web root. Unpacking uses
-  `zlib` (`gzopen`) with a small built-in tar reader, and falls back to `Phar`
-  if `zlib` is unavailable — so it works even on hosting where the `phar`
-  extension is disabled.
-* **Runtime data is protected**: `config.php`, `.deploy-token`, the VCS folders
-  and anything you list in `DEPLOY_PROTECTED` are never overwritten or deleted.
-
----
-
-## Files
-
-| File                 | Where it runs | Purpose                                              |
-|----------------------|---------------|------------------------------------------------------|
-| `deploy.php`         | **Server**    | Receives the package, unpacks it, triggers migrations |
-| `sql/migrate.php`    | **Server**    | Optional DB migration runner (called by `deploy.php`) |
-| `production.ps1`     | Local (Win)   | Packs and uploads the project                        |
-| `production.sh`      | Local (\*nix) | Packs and uploads the project                        |
-| `config.sample.php`  | both          | Copy to `config.php` and fill in                     |
-| `.deployignore`      | Local         | Optional: extra paths to exclude from uploads        |
-
----
-
-## Setup
-
-### 1. Drop the tool into your project
-
-Copy `deploy.php`, the `sql/` folder, `config.sample.php` and the
-`production.*` scripts into the root of your web project (the folder that maps
-to your web root on the server).
-
-### 2. Create the config
-
-```bash
-cp config.sample.php config.php
-```
-
-Edit `config.php`:
-
-* **`DEPLOY_TOKEN`** — a long random shared secret. Generate one with:
-  ```bash
-  php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
-  ```
-  You can keep it inline, or put it in a `.deploy-token` file next to
-  `config.php` (git-ignored) — if present, that file wins.
-* **`DEPLOY_ALLOWED_IPS`** — optional IP / CIDR allow-list. Leave empty to rely
-  on the token alone. Restricting to your office/home IP is strongly recommended.
-* **`DEPLOY_PROTECTED`** — relative paths (uploads, logs, caches…) that a deploy
-  must never overwrite or delete.
-* **`DB_*`** — only needed if you use migrations.
-
-The same `config.php` must exist **on the server** too (with the server's own
-DB credentials). It is git-ignored and never overwritten by a deploy, so each
-environment keeps its own copy.
-
-### 3. Tell the client where to deploy
-
-Pass `-Url` / `--url` each time, or create a `.deploy-url` file in the project
-root containing the endpoint:
-
-```
-https://example.com/deploy.php
-```
-
-### 4. Make sure PHP can write the web root
-
-`deploy.php` writes files directly into its own directory, so the PHP process
-must have write permission there. To unpack the package it needs **either**
-`zlib` (`gzopen`, present on virtually every PHP build) **or** the `Phar`
-extension — one of the two is enough.
-
----
-
-## Usage
-
-### Full deploy
-
-```powershell
-# Windows
-.\production.ps1
-```
-```bash
-# Linux / macOS
-./production.sh
-```
-
-Packs the whole project (minus excluded paths), uploads it, and runs migrations.
-A full deploy **never deletes** anything on the server.
-
-### Deploy only what changed
-
-```bash
-./production.sh --changed              # files changed by the last commit
-./production.sh --changed --since v1.2 # files changed since tag/ref v1.2
-```
-
-`--changed` (PowerShell: `-Changed`) deploys only the files touched by the last
-commit, **and deletes on the server the files that commit removed**. It sends
-the working-tree content, so what's on disk is what's deployed.
-
-### Dry run
-
-```bash
-./production.sh --changed --dry-run    # print what would be sent/deleted
-```
-
-### Without migrations
-
-```bash
-./production.sh --no-migrate           # PowerShell: -NoMigrate
-```
-
-### Options
-
-| PowerShell      | bash             | Meaning                                          |
-|-----------------|------------------|--------------------------------------------------|
-| `-Url`          | `--url`          | Deploy endpoint (overrides `.deploy-url`)        |
-| `-Token`        | `--token`        | Deploy token (overrides `.deploy-token`)         |
-| `-Changed`      | `--changed`      | Deploy only files changed by the last commit     |
-| `-Since <ref>`  | `--since <ref>`  | With `-Changed`: range `<ref>..HEAD`             |
-| `-NoMigrate`    | `--no-migrate`   | Skip running migrations                          |
-| `-DryRun`       | `--dry-run`      | Print only, upload nothing                       |
-
----
-
-## Excluding files from upload
-
-The client never uploads its own tooling (`production.*`, `config.php`,
-`config.sample.php`, `README.md`), the VCS folders (`.git`, `.github`, `.svn`)
-or the secret files (`.deploy-token`, `.deploy-url`).
-
-For project-specific exclusions, add a **`.deployignore`** file to the root —
-one path or directory prefix per line (`#` starts a comment):
-
-```
-# .deployignore
-node_modules
-tests
-storage/cache
-*.map
-uploads
-```
-
-> Server-side, `DEPLOY_PROTECTED` is the authoritative guard — even if a file
-> slips into the package, the listed paths are never overwritten or deleted.
-
----
-
-## Database migrations (optional)
-
-If a `sql/migrate.php` exists on the server, `deploy.php` runs it after
-unpacking (unless `--no-migrate` was used). If it doesn't exist, the deploy
-simply skips migrations — they are entirely optional.
-
-The runner is convention-based and lives in `sql/`:
-
-* **`sql/schema.sql`** — the full initial schema. Applied **once** on a fresh
-  database as *version 0*.
-* **`sql/migrate_v1.sql`, `sql/migrate_v2.sql`, …** — incremental changes,
-  applied in ascending order of `N`, each recorded once it succeeds.
-
-On the first run it will:
-
-1. **Create the database** named in `config.php` if it does not exist.
-2. Create a `migrations` bookkeeping table.
-3. Apply `schema.sql` (if present), then any pending `migrate_v*.sql`.
-
-Statements are split on `;` and run one by one. Common *"already exists"* errors
-(`1050`, `1060`, `1061`, `1062`, `1091`) are tolerated, so re-running is safe.
-
-You can also run it by hand:
-
-```bash
-php sql/migrate.php
-```
-
-If `sql/` contains no `schema.sql` and no `migrate_v*.sql`, the runner does
-nothing and leaves the database untouched.
-
----
-
-## Security notes
-
-* **Use HTTPS.** The token travels in a header — never deploy over plain HTTP.
-* **Restrict by IP** whenever you can (`DEPLOY_ALLOWED_IPS`). The token is the
-  fallback, not the only line of defense.
-* **Keep `deploy.php` behind the token.** Anyone who can POST a valid token can
-  overwrite your web root. Treat the token like a password; rotate it if leaked.
-* `config.php` and `.deploy-token` are git-ignored — keep them out of your repo.
-* Consider removing/renaming `deploy.php` on environments where you don't deploy.
-
----
-
-## Requirements
-
-* **Server:** PHP 7.4+ with `zlib` **or** `Phar` (to unpack), `PDO`/`pdo_mysql`
-  (only if you use migrations), and a writable web root.
-* **Local:** `git`, `curl` and `tar` on `PATH`. PowerShell 5+ on Windows or
-  Bash 4+ on Linux/macOS.
-
-## Testing
-
-Self-contained end-to-end tests live in `test/` — `deploy-test.ps1` exercises
-`production.ps1`, `deploy-test.sh` exercises `production.sh`. Each starts a
-throwaway PHP server hosting `deploy.php`, deploys a sample project onto it, and
-asserts files land, protected paths survive, migrations run and changed-mode
-deletes work. They need PHP, git, tar, curl and a local MariaDB/MySQL:
-
-```powershell
-# PowerShell client
-.\test\deploy-test.ps1                       # php on PATH, DB user root, empty password
-.\test\deploy-test.ps1 -Php c:\php\php.exe -DbUser root -DbPass secret -Port 8123
-```
-```bash
-# bash client (env vars: PHP, PORT, DBHOST, DBUSER, DBPASS)
-PHP=php DBUSER=root DBPASS=secret PORT=8101 ./test/deploy-test.sh
-```
-
----
-
-## Author
-
-**Radek Hulán** — [https://mywebdesign.cz/](https://mywebdesign.cz/)
-
----
-
-## License
-
-MIT. Use it, adapt it, ship it.
-
----
----
-
-# HTTPDeploy 🇨🇿 (česká verze)
+> 🇬🇧 **English** — [jump to the English version below ↓](#english)
 
 **Minimalistický deploy přes HTTP pro omezené hostingy.**
 
@@ -537,3 +267,279 @@ PHP=php DBUSER=root DBPASS=secret PORT=8101 ./test/deploy-test.sh
 ## Licence
 
 MIT. Použij to, uprav, nasaď.
+
+---
+---
+
+<a name="english"></a>
+
+# HTTPDeploy 🇬🇧 (English version)
+
+> 🇨🇿 **Česky** — [skok na českou verzi nahoře ↑](#httpdeploy)
+
+**A minimal HTTP-based deploy tool for restricted hosting.**
+
+HTTPDeploy is a *last-resort* deployment solution for cheap or locked-down
+hosting that offers **no SSH, no Git, no CI/CD and cannot reach out to GitHub** —
+the kind of shared hosting where your only real channel to the server is HTTP(S)
+and maybe FTP.
+
+The idea is simple:
+
+1. On your **local machine** you run `production.ps1` (Windows) or
+   `production.sh` (Linux/macOS). It packs your project into a `tar.gz` and
+   `POST`s it to the server over HTTPS.
+2. On the **server**, a single file — `deploy.php` — receives the package,
+   unpacks it into the web root, and (optionally) runs your SQL migrations.
+
+No build agents, no SSH keys on the host, no outbound connections from the
+server. Your local machine pushes; the server unpacks.
+
+> ⚠️ This is a pragmatic workaround, not a replacement for a proper CI/CD
+> pipeline. If your hosting supports SSH + Git, use that instead.
+
+---
+
+## How it works
+
+```
+   ┌─────────────────────┐         HTTPS POST          ┌──────────────────────┐
+   │   Local machine     │   package.tar.gz  ───────▶  │       Server         │
+   │                     │   X-Deploy-Token: …         │                      │
+   │  production.ps1/sh  │   migrate=1                 │      deploy.php      │
+   │   • git diff        │   delete=…                  │   • verify IP+token  │
+   │   • pack tar.gz     │                             │   • unpack to root   │
+   │   • curl upload     │  ◀───────  plain-text resp  │   • run migrations   │
+   └─────────────────────┘                             └──────────────────────┘
+```
+
+* The client never trusts the server to fetch anything — it sends the bytes.
+* The server authenticates the request by **IP allow-list** (optional) and a
+  **shared token**, then unpacks the archive into the web root. Unpacking uses
+  `zlib` (`gzopen`) with a small built-in tar reader, and falls back to `Phar`
+  if `zlib` is unavailable — so it works even on hosting where the `phar`
+  extension is disabled.
+* **Runtime data is protected**: `config.php`, `.deploy-token`, the VCS folders
+  and anything you list in `DEPLOY_PROTECTED` are never overwritten or deleted.
+
+---
+
+## Files
+
+| File                 | Where it runs | Purpose                                              |
+|----------------------|---------------|------------------------------------------------------|
+| `deploy.php`         | **Server**    | Receives the package, unpacks it, triggers migrations |
+| `sql/migrate.php`    | **Server**    | Optional DB migration runner (called by `deploy.php`) |
+| `production.ps1`     | Local (Win)   | Packs and uploads the project                        |
+| `production.sh`      | Local (\*nix) | Packs and uploads the project                        |
+| `config.sample.php`  | both          | Copy to `config.php` and fill in                     |
+| `.deployignore`      | Local         | Optional: extra paths to exclude from uploads        |
+
+---
+
+## Setup
+
+### 1. Drop the tool into your project
+
+Copy `deploy.php`, the `sql/` folder, `config.sample.php` and the
+`production.*` scripts into the root of your web project (the folder that maps
+to your web root on the server).
+
+### 2. Create the config
+
+```bash
+cp config.sample.php config.php
+```
+
+Edit `config.php`:
+
+* **`DEPLOY_TOKEN`** — a long random shared secret. Generate one with:
+  ```bash
+  php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
+  ```
+  You can keep it inline, or put it in a `.deploy-token` file next to
+  `config.php` (git-ignored) — if present, that file wins.
+* **`DEPLOY_ALLOWED_IPS`** — optional IP / CIDR allow-list. Leave empty to rely
+  on the token alone. Restricting to your office/home IP is strongly recommended.
+* **`DEPLOY_PROTECTED`** — relative paths (uploads, logs, caches…) that a deploy
+  must never overwrite or delete.
+* **`DB_*`** — only needed if you use migrations.
+
+The same `config.php` must exist **on the server** too (with the server's own
+DB credentials). It is git-ignored and never overwritten by a deploy, so each
+environment keeps its own copy.
+
+### 3. Tell the client where to deploy
+
+Pass `-Url` / `--url` each time, or create a `.deploy-url` file in the project
+root containing the endpoint:
+
+```
+https://example.com/deploy.php
+```
+
+### 4. Make sure PHP can write the web root
+
+`deploy.php` writes files directly into its own directory, so the PHP process
+must have write permission there. To unpack the package it needs **either**
+`zlib` (`gzopen`, present on virtually every PHP build) **or** the `Phar`
+extension — one of the two is enough.
+
+---
+
+## Usage
+
+### Full deploy
+
+```powershell
+# Windows
+.\production.ps1
+```
+```bash
+# Linux / macOS
+./production.sh
+```
+
+Packs the whole project (minus excluded paths), uploads it, and runs migrations.
+A full deploy **never deletes** anything on the server.
+
+### Deploy only what changed
+
+```bash
+./production.sh --changed              # files changed by the last commit
+./production.sh --changed --since v1.2 # files changed since tag/ref v1.2
+```
+
+`--changed` (PowerShell: `-Changed`) deploys only the files touched by the last
+commit, **and deletes on the server the files that commit removed**. It sends
+the working-tree content, so what's on disk is what's deployed.
+
+### Dry run
+
+```bash
+./production.sh --changed --dry-run    # print what would be sent/deleted
+```
+
+### Without migrations
+
+```bash
+./production.sh --no-migrate           # PowerShell: -NoMigrate
+```
+
+### Options
+
+| PowerShell      | bash             | Meaning                                          |
+|-----------------|------------------|--------------------------------------------------|
+| `-Url`          | `--url`          | Deploy endpoint (overrides `.deploy-url`)        |
+| `-Token`        | `--token`        | Deploy token (overrides `.deploy-token`)         |
+| `-Changed`      | `--changed`      | Deploy only files changed by the last commit     |
+| `-Since <ref>`  | `--since <ref>`  | With `-Changed`: range `<ref>..HEAD`             |
+| `-NoMigrate`    | `--no-migrate`   | Skip running migrations                          |
+| `-DryRun`       | `--dry-run`      | Print only, upload nothing                       |
+
+---
+
+## Excluding files from upload
+
+The client never uploads its own tooling (`production.*`, `config.php`,
+`config.sample.php`, `README.md`), the VCS folders (`.git`, `.github`, `.svn`)
+or the secret files (`.deploy-token`, `.deploy-url`).
+
+For project-specific exclusions, add a **`.deployignore`** file to the root —
+one path or directory prefix per line (`#` starts a comment):
+
+```
+# .deployignore
+node_modules
+tests
+storage/cache
+*.map
+uploads
+```
+
+> Server-side, `DEPLOY_PROTECTED` is the authoritative guard — even if a file
+> slips into the package, the listed paths are never overwritten or deleted.
+
+---
+
+## Database migrations (optional)
+
+If a `sql/migrate.php` exists on the server, `deploy.php` runs it after
+unpacking (unless `--no-migrate` was used). If it doesn't exist, the deploy
+simply skips migrations — they are entirely optional.
+
+The runner is convention-based and lives in `sql/`:
+
+* **`sql/schema.sql`** — the full initial schema. Applied **once** on a fresh
+  database as *version 0*.
+* **`sql/migrate_v1.sql`, `sql/migrate_v2.sql`, …** — incremental changes,
+  applied in ascending order of `N`, each recorded once it succeeds.
+
+On the first run it will:
+
+1. **Create the database** named in `config.php` if it does not exist.
+2. Create a `migrations` bookkeeping table.
+3. Apply `schema.sql` (if present), then any pending `migrate_v*.sql`.
+
+Statements are split on `;` and run one by one. Common *"already exists"* errors
+(`1050`, `1060`, `1061`, `1062`, `1091`) are tolerated, so re-running is safe.
+
+You can also run it by hand:
+
+```bash
+php sql/migrate.php
+```
+
+If `sql/` contains no `schema.sql` and no `migrate_v*.sql`, the runner does
+nothing and leaves the database untouched.
+
+---
+
+## Security notes
+
+* **Use HTTPS.** The token travels in a header — never deploy over plain HTTP.
+* **Restrict by IP** whenever you can (`DEPLOY_ALLOWED_IPS`). The token is the
+  fallback, not the only line of defense.
+* **Keep `deploy.php` behind the token.** Anyone who can POST a valid token can
+  overwrite your web root. Treat the token like a password; rotate it if leaked.
+* `config.php` and `.deploy-token` are git-ignored — keep them out of your repo.
+* Consider removing/renaming `deploy.php` on environments where you don't deploy.
+
+---
+
+## Requirements
+
+* **Server:** PHP 7.4+ with `zlib` **or** `Phar` (to unpack), `PDO`/`pdo_mysql`
+  (only if you use migrations), and a writable web root.
+* **Local:** `git`, `curl` and `tar` on `PATH`. PowerShell 5+ on Windows or
+  Bash 4+ on Linux/macOS.
+
+## Testing
+
+Self-contained end-to-end tests live in `test/` — `deploy-test.ps1` exercises
+`production.ps1`, `deploy-test.sh` exercises `production.sh`. Each starts a
+throwaway PHP server hosting `deploy.php`, deploys a sample project onto it, and
+asserts files land, protected paths survive, migrations run and changed-mode
+deletes work. They need PHP, git, tar, curl and a local MariaDB/MySQL:
+
+```powershell
+# PowerShell client
+.\test\deploy-test.ps1                       # php on PATH, DB user root, empty password
+.\test\deploy-test.ps1 -Php c:\php\php.exe -DbUser root -DbPass secret -Port 8123
+```
+```bash
+# bash client (env vars: PHP, PORT, DBHOST, DBUSER, DBPASS)
+PHP=php DBUSER=root DBPASS=secret PORT=8101 ./test/deploy-test.sh
+```
+
+---
+
+## Author
+
+**Radek Hulán** — [https://mywebdesign.cz/](https://mywebdesign.cz/)
+
+---
+
+## License
+
+MIT. Use it, adapt it, ship it.
