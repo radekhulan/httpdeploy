@@ -94,17 +94,21 @@ trap cleanup EXIT
 
 if [[ $CHANGED -eq 1 ]]; then
     # ── Only files changed by the last commit (or from --since to HEAD) ─────────
+    # --no-renames: a rename is split into a delete of the old path (D) + an add
+    # of the new (A). Without it git reports renames as R, the old path misses
+    # --diff-filter=D and the orphaned original file lingers on production forever
+    # (typically versioned assets style.vN.css -> style.vN+1.css).
     if [[ -n "$SINCE" ]]; then
         RANGE="$SINCE..HEAD"; FIRST=0
-        mapfile -t FILES   < <(git -C "$ROOT" diff --name-only --diff-filter=ACMRT "$SINCE" HEAD)
-        mapfile -t DELETED < <(git -C "$ROOT" diff --name-only --diff-filter=D     "$SINCE" HEAD)
+        mapfile -t FILES   < <(git -C "$ROOT" diff --name-only --no-renames --diff-filter=ACMT "$SINCE" HEAD)
+        mapfile -t DELETED < <(git -C "$ROOT" diff --name-only --no-renames --diff-filter=D    "$SINCE" HEAD)
     elif git -C "$ROOT" rev-parse --verify -q HEAD~1 >/dev/null; then
         RANGE="last commit (HEAD~1..HEAD)"; FIRST=0
-        mapfile -t FILES   < <(git -C "$ROOT" diff --name-only --diff-filter=ACMRT HEAD~1 HEAD)
-        mapfile -t DELETED < <(git -C "$ROOT" diff --name-only --diff-filter=D     HEAD~1 HEAD)
+        mapfile -t FILES   < <(git -C "$ROOT" diff --name-only --no-renames --diff-filter=ACMT HEAD~1 HEAD)
+        mapfile -t DELETED < <(git -C "$ROOT" diff --name-only --no-renames --diff-filter=D    HEAD~1 HEAD)
     else
         RANGE="first commit"; FIRST=1
-        mapfile -t FILES   < <(git -C "$ROOT" show --pretty=format: --name-only --diff-filter=ACMRT HEAD)
+        mapfile -t FILES   < <(git -C "$ROOT" show --pretty=format: --name-only --no-renames --diff-filter=ACMT HEAD)
         DELETED=()
     fi
 

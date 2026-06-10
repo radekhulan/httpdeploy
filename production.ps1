@@ -84,20 +84,24 @@ $delFile = $null   # temp list of files to delete (only -Changed mode)
 
 if ($Changed) {
     # ── Only files changed by the last commit (or from -Since to HEAD) ──────────
+    # --no-renames: a rename is split into a delete of the old path (D) + an add
+    # of the new (A). Without it git reports renames as R, the old path misses
+    # --diff-filter=D and the orphaned original file lingers on production forever
+    # (typically versioned assets style.vN.css -> style.vN+1.css).
     if ($Since) {
         $range   = "$Since..HEAD"
         $isFirst = $false
-        $files   = git -C $root diff --name-only --diff-filter=ACMRT $Since HEAD
+        $files   = git -C $root diff --name-only --no-renames --diff-filter=ACMT $Since HEAD
     } else {
         git -C $root rev-parse --verify -q HEAD~1 *> $null
         if ($LASTEXITCODE -eq 0) {
             $range   = "last commit (HEAD~1..HEAD)"
             $isFirst = $false
-            $files   = git -C $root diff --name-only --diff-filter=ACMRT HEAD~1 HEAD
+            $files   = git -C $root diff --name-only --no-renames --diff-filter=ACMT HEAD~1 HEAD
         } else {
             $range   = "first commit"
             $isFirst = $true
-            $files   = git -C $root show --pretty=format: --name-only --diff-filter=ACMRT HEAD
+            $files   = git -C $root show --pretty=format: --name-only --no-renames --diff-filter=ACMT HEAD
         }
     }
     if ($LASTEXITCODE -ne 0) { throw "git diff failed (code $LASTEXITCODE)" }
@@ -105,8 +109,8 @@ if ($Changed) {
     # Deleted files (none on the very first commit)
     $deleted = @()
     if (-not $isFirst) {
-        if ($Since) { $deleted = git -C $root diff --name-only --diff-filter=D $Since HEAD }
-        else        { $deleted = git -C $root diff --name-only --diff-filter=D HEAD~1 HEAD }
+        if ($Since) { $deleted = git -C $root diff --name-only --no-renames --diff-filter=D $Since HEAD }
+        else        { $deleted = git -C $root diff --name-only --no-renames --diff-filter=D HEAD~1 HEAD }
         if ($LASTEXITCODE -ne 0) { throw "git diff (deleted) failed (code $LASTEXITCODE)" }
     }
 
