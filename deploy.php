@@ -14,6 +14,12 @@
  *     field   delete  = newline-separated list of relative paths to delete
  *                       on the server (used by production.* --changed mode)
  *
+ * While the web root is being updated, a maintenance semaphore file
+ * (.deploy-lock) is present in the web root. Your site can check for it and
+ * serve a "be right back" page during the (usually sub-second) window. The lock
+ * is removed when the deploy finishes, and also by a shutdown handler if the
+ * deploy dies mid-way. See README ("Maintenance semaphore") and maintenance.html.
+ *
  * Runtime data is never touched: config.php, .deploy-token and any path listed
  * in DEPLOY_PROTECTED, plus the VCS folders, are skipped on both copy and delete.
  *
@@ -165,7 +171,7 @@ if (count($tops) === 1) {
 
 // ── Protected paths (never overwritten, never deleted) ────────────────────────
 $protected = array_merge(
-    ['config.php', '.deploy-token', '.deployignore', '.git', '.github', '.svn'],
+    ['config.php', '.deploy-token', '.deployignore', '.deploy-lock', '.git', '.github', '.svn'],
     defined('DEPLOY_PROTECTED') ? DEPLOY_PROTECTED : []
 );
 $isExcluded = function ($rel) use ($protected) {
@@ -176,6 +182,20 @@ $isExcluded = function ($rel) use ($protected) {
     }
     return false;
 };
+
+// ── Maintenance semaphore: raise it just before the web root is touched ───────
+// Present for the whole sync + delete + migrations window. The production site
+// can check for this file and serve a maintenance page (see maintenance.html).
+// The shutdown handler guarantees it is cleared even on a fatal error / timeout.
+$lockFile    = $root . '/.deploy-lock';
+$lockCleared = false;
+$releaseLock = function () use ($lockFile, &$lockCleared) {
+    if ($lockCleared) return;
+    if (is_file($lockFile)) @unlink($lockFile);
+    $lockCleared = true;
+};
+@file_put_contents($lockFile, gmdate('c') . " deploy in progress\n", LOCK_EX);
+register_shutdown_function($releaseLock);
 
 // ── Sync into the web root (second pass: extract bodies) ──────────────────────
 $copied = 0;
@@ -224,6 +244,7 @@ if (($_POST['migrate'] ?? '1') !== '0' && is_file($migrateScript)) {
 }
 
 rrmdir($work);
+$releaseLock();                                      // lower the maintenance semaphore
 echo "OK – files deployed: $copied\n";
 if ($deleted || $delSkipped) echo "Files deleted: $deleted" . ($delSkipped ? " (skipped: $delSkipped)" : '') . "\n";
 if ($migrateOut !== '') echo "\n--- migrations ---\n$migrateOut\n";

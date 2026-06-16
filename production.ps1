@@ -9,7 +9,8 @@
 #   .\production.ps1 -NoMigrate            # do not run migrations
 #   .\production.ps1 -Changed              # deploy ONLY files changed by the last commit
 #                                          #   (incl. deleting files the commit removed)
-#   .\production.ps1 -Changed -Since v1.2  # files changed from ref v1.2 to HEAD
+#   .\production.ps1 -Changed -Since HEAD~2  # files changed over the last 2 commits
+#   .\production.ps1 -Changed -Since v1.2  # files changed from any ref (tag/SHA/branch) to HEAD
 #   .\production.ps1 -Changed -DryRun      # only print what would be sent/deleted
 #   .\production.ps1 -Url https://staging.example.com/deploy.php
 #

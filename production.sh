@@ -10,7 +10,8 @@
 #   ./production.sh --no-migrate           # do not run migrations
 #   ./production.sh --changed              # deploy ONLY files changed by the last commit
 #                                          #   (incl. deleting files the commit removed)
-#   ./production.sh --changed --since v1.2 # files changed from ref v1.2 to HEAD
+#   ./production.sh --changed --since HEAD~2 # files changed over the last 2 commits
+#   ./production.sh --changed --since v1.2 # files changed from any ref (tag/SHA/branch) to HEAD
 #   ./production.sh --changed --dry-run    # only print what would be sent/deleted
 #   ./production.sh --url https://staging.example.com/deploy.php
 #

@@ -58,6 +58,8 @@ Lokální stroj pushuje, server rozbaluje.
 | `production.sh`      | Lokál (\*nix) | Zabalí a nahraje projekt                              |
 | `config.sample.php`  | obojí         | Zkopíruj na `config.php` a vyplň                      |
 | `.deployignore`      | Lokál         | Volitelně: další cesty vyloučené z uploadu            |
+| `maintenance.html`   | **Server**    | Volitelně: stránka „hned jsme zpět" během nasazení    |
+| `.deploy-lock`       | **Server**    | Semafor — `deploy.php` ho vytvoří po dobu nasazení    |
 
 ---
 
@@ -129,13 +131,27 @@ nasazení na serveru **nikdy nic nemaže**.
 ### Nasadit jen změny
 
 ```bash
-./production.sh --changed              # soubory změněné posledním commitem
-./production.sh --changed --since v1.2 # soubory změněné od tagu/ref v1.2
+./production.sh --changed                 # soubory změněné posledním commitem
+./production.sh --changed --since HEAD~2   # změny za POSLEDNÍ 2 commity (HEAD~2..HEAD)
+./production.sh --changed --since v1.2     # změny od tagu v1.2 po HEAD
+./production.sh --changed --since abc1234  # změny od konkrétního commitu po HEAD
 ```
 
 `--changed` (PowerShell: `-Changed`) nasadí jen soubory dotčené posledním
 commitem **a smaže na serveru soubory, které ten commit odstranil**. Posílá obsah
 pracovního stromu, takže se nasazuje to, co máš na disku.
+
+Potřebuješ nasadit víc než poslední commit? Použij `--since <ref>` (PowerShell:
+`-Since <ref>`) — rozsah je vždy `<ref>..HEAD`. Jako `<ref>` projde cokoli, co
+git umí přeložit:
+
+- **N commitů zpět** → `HEAD~N` (např. `--since HEAD~2` = poslední 2 commity),
+- **tag** → `v1.2`,
+- **konkrétní commit** → jeho SHA (`abc1234`),
+- **větev** → `main` (změny od posledního společného stavu po HEAD).
+
+Tip: nejdřív si rozsah ověř přes `--dry-run` (PowerShell: `-DryRun`),
+než cokoli odešleš.
 
 ### Nanečisto (dry run)
 
@@ -182,6 +198,72 @@ uploads
 
 > Na straně serveru je autoritativní pojistkou `DEPLOY_PROTECTED` — i kdyby se
 > soubor do balíčku dostal, uvedené cesty se nikdy nepřepíšou ani nesmažou.
+
+---
+
+## Semafor údržby (maintenance)
+
+Po dobu, kdy `deploy.php` přepisuje soubory ve web rootu, je tam přítomný
+semafor — soubor **`.deploy-lock`**. Vznikne těsně předtím, než se začne sahat
+na web root, a zase zmizí, jakmile je hotovo (sync + mazání + migrace). I kdyby
+nasazení v půlce spadlo nebo vypršel časový limit, `deploy.php` semafor uklidí
+přes shutdown handler. Soubor je chráněný (`DEPLOY_PROTECTED`), takže ho samotné
+nasazení nikdy nepřepíše ani nesmaže.
+
+Tvůj web se na semafor může podívat a po tu (obvykle podsekundovou) chvíli
+servírovat stránku „hned jsme zpět" — viz přiložený `maintenance.html`.
+
+**PHP — na začátku front controlleru (`index.php`):**
+
+```php
+$lock = __DIR__ . '/.deploy-lock';
+// Pojistka proti uvíznutí: starší zámek než 5 minut ignoruj.
+if (is_file($lock) && time() - filemtime($lock) < 300) {
+    http_response_code(503);
+    header('Retry-After: 30');
+    header('Cache-Control: no-store');
+    readfile(__DIR__ . '/maintenance.html');
+    exit;
+}
+```
+
+**IIS / `web.config`** (čistě statický web bez PHP front controlleru) — pravidlo,
+které při existenci zámku přesměruje vše na `maintenance.html`. IIS test
+`{APPL_PHYSICAL_PATH}.deploy-lock` ověří přítomnost souboru:
+
+```xml
+<rule name="MaintenanceLock" stopProcessing="true">
+  <match url=".*" />
+  <conditions>
+    <add input="{APPL_PHYSICAL_PATH}.deploy-lock" matchType="IsFile" />
+    <add input="{REQUEST_FILENAME}" pattern="maintenance\.html$" negate="true" />
+  </conditions>
+  <action type="Rewrite" url="/maintenance.html" />
+</rule>
+```
+
+**Apache / `.htaccess`** (vyžaduje `mod_rewrite`, příp. `mod_headers`) — pokud
+zámek existuje, vrať `503` a jako tělo pošli `maintenance.html`. Díky
+`ErrorDocument` zůstane stavový kód `503` (na rozdíl od `R=503,L` se prohlížeči
+opravdu pošle obsah stránky):
+
+```apache
+RewriteEngine On
+# Když existuje semafor a nejde už o samotnou maintenance stránku → 503.
+RewriteCond %{DOCUMENT_ROOT}/.deploy-lock -f
+RewriteCond %{REQUEST_URI} !=/maintenance.html
+RewriteRule ^ - [R=503,L]
+
+ErrorDocument 503 /maintenance.html
+# Retry-After přidej jen po dobu zámku (mod_headers + Apache 2.4):
+<If "-f '%{DOCUMENT_ROOT}/.deploy-lock'">
+  Header always set Retry-After "30"
+</If>
+```
+
+> `maintenance.html` je jeden soběstačný soubor (žádné externí CSS/JS/obrázky),
+> aby fungoval i uprostřed nasazení, kdy mohou ostatní assety chvíli chybět.
+> Vrací se s `503` + `Retry-After`, takže to vyhledávače chápou jako dočasný stav.
 
 ---
 
@@ -334,6 +416,8 @@ server. Your local machine pushes; the server unpacks.
 | `production.sh`      | Local (\*nix) | Packs and uploads the project                        |
 | `config.sample.php`  | both          | Copy to `config.php` and fill in                     |
 | `.deployignore`      | Local         | Optional: extra paths to exclude from uploads        |
+| `maintenance.html`   | **Server**    | Optional: "be right back" page shown during a deploy |
+| `.deploy-lock`       | **Server**    | Semaphore — `deploy.php` raises it during a deploy   |
 
 ---
 
@@ -406,13 +490,25 @@ A full deploy **never deletes** anything on the server.
 ### Deploy only what changed
 
 ```bash
-./production.sh --changed              # files changed by the last commit
-./production.sh --changed --since v1.2 # files changed since tag/ref v1.2
+./production.sh --changed                 # files changed by the last commit
+./production.sh --changed --since HEAD~2   # changes over the LAST 2 commits (HEAD~2..HEAD)
+./production.sh --changed --since v1.2     # changes since tag v1.2 up to HEAD
+./production.sh --changed --since abc1234  # changes since a specific commit up to HEAD
 ```
 
 `--changed` (PowerShell: `-Changed`) deploys only the files touched by the last
 commit, **and deletes on the server the files that commit removed**. It sends
 the working-tree content, so what's on disk is what's deployed.
+
+Need more than the last commit? Use `--since <ref>` (PowerShell: `-Since <ref>`)
+— the range is always `<ref>..HEAD`. The `<ref>` can be anything git can resolve:
+
+- **N commits back** → `HEAD~N` (e.g. `--since HEAD~2` = last 2 commits),
+- **a tag** → `v1.2`,
+- **a specific commit** → its SHA (`abc1234`),
+- **a branch** → `main` (changes since the merge base up to HEAD).
+
+Tip: confirm the range with `--dry-run` (PowerShell: `-DryRun`) before sending.
 
 ### Dry run
 
@@ -459,6 +555,72 @@ uploads
 
 > Server-side, `DEPLOY_PROTECTED` is the authoritative guard — even if a file
 > slips into the package, the listed paths are never overwritten or deleted.
+
+---
+
+## Maintenance semaphore
+
+While `deploy.php` is replacing files in the web root, a semaphore file —
+**`.deploy-lock`** — is present there. It is raised right before the web root is
+touched and removed once everything is done (sync + delete + migrations). Even if
+the deploy crashes halfway or times out, `deploy.php` clears it via a shutdown
+handler. The file is protected (`DEPLOY_PROTECTED`), so the deploy itself never
+overwrites or deletes it.
+
+Your site can check for the semaphore and serve a "be right back" page during
+that (usually sub-second) window — see the bundled `maintenance.html`.
+
+**PHP — at the top of your front controller (`index.php`):**
+
+```php
+$lock = __DIR__ . '/.deploy-lock';
+// Safety valve against a stuck lock: ignore one older than 5 minutes.
+if (is_file($lock) && time() - filemtime($lock) < 300) {
+    http_response_code(503);
+    header('Retry-After: 30');
+    header('Cache-Control: no-store');
+    readfile(__DIR__ . '/maintenance.html');
+    exit;
+}
+```
+
+**IIS / `web.config`** (purely static site, no PHP front controller) — a rule
+that rewrites everything to `maintenance.html` while the lock exists. The
+`{APPL_PHYSICAL_PATH}.deploy-lock` test checks the file's presence:
+
+```xml
+<rule name="MaintenanceLock" stopProcessing="true">
+  <match url=".*" />
+  <conditions>
+    <add input="{APPL_PHYSICAL_PATH}.deploy-lock" matchType="IsFile" />
+    <add input="{REQUEST_FILENAME}" pattern="maintenance\.html$" negate="true" />
+  </conditions>
+  <action type="Rewrite" url="/maintenance.html" />
+</rule>
+```
+
+**Apache / `.htaccess`** (needs `mod_rewrite`, plus `mod_headers` for the header)
+— while the lock exists, return `503` and serve `maintenance.html` as the body.
+Using `ErrorDocument` keeps the `503` status code (unlike `R=503,L` alone, the
+page body is actually sent to the browser):
+
+```apache
+RewriteEngine On
+# Lock present and this isn't the maintenance page itself → 503.
+RewriteCond %{DOCUMENT_ROOT}/.deploy-lock -f
+RewriteCond %{REQUEST_URI} !=/maintenance.html
+RewriteRule ^ - [R=503,L]
+
+ErrorDocument 503 /maintenance.html
+# Send Retry-After only while the lock is up (mod_headers + Apache 2.4):
+<If "-f '%{DOCUMENT_ROOT}/.deploy-lock'">
+  Header always set Retry-After "30"
+</If>
+```
+
+> `maintenance.html` is a single self-contained file (no external CSS/JS/images)
+> so it works even mid-deploy, when other assets may briefly be missing. It is
+> returned with `503` + `Retry-After`, so search engines treat it as temporary.
 
 ---
 
