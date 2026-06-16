@@ -237,30 +237,47 @@ $releaseLock = function () use ($lockFile, &$lockCleared) {
 register_shutdown_function($releaseLock);
 
 // ── Sync into the web root (second pass: extract bodies) ──────────────────────
-// Confirm $path resolves to a location strictly inside the web root. The parent
-// directory is expected to exist already (callers create it first); a path that
-// escapes the root — via an absolute target or a symlinked dir inside the root —
-// fails realpath canonicalisation and is rejected. Mirrors the delete branch.
-$insideRoot = function ($path) use ($rootReal) {
-    $realParent = realpath(dirname($path));
-    if ($realParent === false) return false;
-    if ($realParent === $rootReal) return true;
-    return strncmp($realParent, $rootReal . DIRECTORY_SEPARATOR, strlen($rootReal) + 1) === 0;
+// Build the directory chain for a relative path one component at a time, refusing to
+// follow any symlink out of the web root (the Linux symlink-traversal problem). After
+// each mkdir the freshly built level is re-resolved with realpath and must still sit
+// inside $rootReal; a component that is a symlink pointing outside — or any escape —
+// is rejected and the function returns false. On success it returns the canonical path
+// of the deepest directory, guaranteed inside the root. Mirrors the delete branch,
+// which realpath()s the whole path.
+$mkdirInside = function ($dirRel) use ($rootReal) {
+    $cur = $rootReal;                                // canonical, known inside the root
+    foreach (explode('/', $dirRel) as $seg) {
+        if ($seg === '' || $seg === '.') continue;
+        $next = $cur . DIRECTORY_SEPARATOR . $seg;
+        if (!is_dir($next) && !@mkdir($next, 0755)) return false;   // mkdir over a dangling symlink fails → refused
+        $real = realpath($next);
+        if ($real === false
+            || ($real !== $rootReal
+                && strncmp($real, $rootReal . DIRECTORY_SEPARATOR, strlen($rootReal) + 1) !== 0)) return false;
+        $cur = $real;                                // descend into the canonical target
+    }
+    return $cur;
 };
 
 $copied = 0;
-tarEach($tar, true, function ($rel, $isDir, $data) use (&$copied, $wrap, $isExcluded, $insideRoot, $root) {
+tarEach($tar, true, function ($rel, $isDir, $data) use (&$copied, $wrap, $isExcluded, $mkdirInside) {
     if ($wrap !== '' && strpos($rel, $wrap) === 0) $rel = substr($rel, strlen($wrap));
     // Relative paths only: reject traversal, leading slash and Windows drive letters.
     if ($rel === '' || strpos($rel, '..') !== false || $isExcluded($rel)) return;
     if ($rel[0] === '/' || preg_match('#^[A-Za-z]:#', $rel)) return;
-    $dest = $root . '/' . $rel;
-    if (!is_dir(dirname($dest))) @mkdir(dirname($dest), 0755, true);
-    if (!$insideRoot($dest)) return;                 // parent escaped the root → skip
     if ($isDir) {
-        if (!is_dir($dest)) @mkdir($dest, 0755);
+        $mkdirInside($rel);                          // create the chain incl. the leaf dir
         return;
     }
+    // Build the parent chain safely, then resolve the leaf against that canonical parent.
+    $slash      = strrpos($rel, '/');
+    $parentReal = $mkdirInside($slash === false ? '' : substr($rel, 0, $slash));
+    if ($parentReal === false) return;               // chain escaped the root → skip
+    $dest = $parentReal . DIRECTORY_SEPARATOR . substr($rel, $slash === false ? 0 : $slash + 1);
+    // Never write through a pre-existing symlink at the leaf: file_put_contents follows
+    // it and would land the bytes at the link target, possibly outside the root. Drop it
+    // first so we always write a regular file inside the (now canonical) parent.
+    if (is_link($dest)) @unlink($dest);
     if (@file_put_contents($dest, (string) $data) !== false) $copied++;
 });
 

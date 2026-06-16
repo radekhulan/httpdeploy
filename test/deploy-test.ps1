@@ -81,6 +81,22 @@ $cfgHashBefore = (Get-FileHash (Join-Path $server 'config.php')).Hash
 New-Item -ItemType Directory -Force (Join-Path $server 'uploads') | Out-Null
 Set-Content (Join-Path $server 'uploads\data.txt') 'KEEP ME' -Encoding ASCII
 
+# Symlink-escape guard: pre-existing symlinks in the web root pointing OUTSIDE it must
+# never be followed when the matching archive entry is written. Creating symlinks on
+# Windows needs privilege/Developer Mode; if it fails we skip these checks (no FAIL).
+$outside = Join-Path $base 'outside'
+New-Item -ItemType Directory -Force (Join-Path $outside 'sub') | Out-Null
+Set-Content (Join-Path $outside 'secret.txt')   'UNTOUCHED'     -Encoding ASCII -NoNewline
+Set-Content (Join-Path $outside 'sub\deep.txt') 'UNTOUCHED-DIR' -Encoding ASCII -NoNewline
+$symlinkTest = $true
+try {
+    New-Item -ItemType SymbolicLink -Path (Join-Path $server 'hijack.php') -Target (Join-Path $outside 'secret.txt') -ErrorAction Stop | Out-Null
+    New-Item -ItemType SymbolicLink -Path (Join-Path $server 'hijackdir')  -Target (Join-Path $outside 'sub')        -ErrorAction Stop | Out-Null
+} catch {
+    $symlinkTest = $false
+    Write-Host "  SKIP  symlink-escape checks (cannot create symlinks: $($_.Exception.Message))" -ForegroundColor Yellow
+}
+
 # ── Build the "local project" (a git repo) ────────────────────────────────────
 Set-Content (Join-Path $local 'index.php')    "<?php echo 'app v1';" -Encoding ASCII
 Set-Content (Join-Path $local 'lib\util.php') "<?php // util v1" -Encoding ASCII
@@ -90,6 +106,11 @@ Set-Content (Join-Path $local 'sql\schema.sql') "CREATE TABLE widgets (id INT UN
 Copy-Item (Join-Path $src 'production.ps1') $local                                  # client lives in the project → must be excluded
 Set-Content (Join-Path $local '.deploy-token') $token -Encoding ASCII -NoNewline
 Set-Content (Join-Path $local '.deploy-url')   "http://127.0.0.1:$Port/deploy.php" -Encoding ASCII -NoNewline
+if ($symlinkTest) {
+    Set-Content (Join-Path $local 'hijack.php') '<?php // replaced' -Encoding ASCII -NoNewline   # vs. leaf symlink
+    New-Item -ItemType Directory -Force (Join-Path $local 'hijackdir') | Out-Null
+    Set-Content (Join-Path $local 'hijackdir\deep.php') '<?php // replaced' -Encoding ASCII -NoNewline  # vs. dir symlink
+}
 
 git -C $local init -q
 git -C $local add -A
@@ -120,6 +141,13 @@ try {
 
     $cols = PdoExpr "implode(',', `$p->query('SHOW COLUMNS FROM widgets')->fetchAll(PDO::FETCH_COLUMN))"
     Check "migration created table widgets" ($cols -match 'id' -and $cols -match 'name')
+
+    if ($symlinkTest) {
+        Check "leaf symlink target outside root NOT overwritten" ((Get-Content (Join-Path $outside 'secret.txt') -Raw) -eq 'UNTOUCHED')
+        Check "hijack.php replaced by a regular file inside root" ((Test-Path (Join-Path $server 'hijack.php')) -and (-not (Get-Item (Join-Path $server 'hijack.php')).LinkType) -and ((Get-Content (Join-Path $server 'hijack.php') -Raw) -eq '<?php // replaced'))
+        Check "dir symlink target outside root NOT written into" ((Get-Content (Join-Path $outside 'sub\deep.txt') -Raw) -eq 'UNTOUCHED-DIR')
+        Check "no file leaked through dir symlink" (-not (Test-Path (Join-Path $outside 'sub\deep.php')))
+    }
 
     Write-Host "`n=== CHANGED DEPLOY (add + delete) ===" -ForegroundColor Cyan
     Set-Content (Join-Path $local 'newfile.php') "<?php // new in v2" -Encoding ASCII

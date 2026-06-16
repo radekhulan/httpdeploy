@@ -60,6 +60,17 @@ CFG_HASH_BEFORE="$("$PHP" -r "echo md5_file('$SERVER/config.php');")"
 mkdir -p "$SERVER/uploads"
 printf 'KEEP ME' > "$SERVER/uploads/data.txt"
 
+# ── Symlink-escape guard (Linux) ──────────────────────────────────────────────
+# Pre-existing symlinks in the web root pointing OUTSIDE it must never be followed
+# when the matching archive entry is written: a leaf file symlink must be replaced
+# by a regular file (its target left intact), and a dir symlink must not be written
+# through. Set up the bait targets and the symlinks here.
+mkdir -p "$BASE/outside/sub"
+printf 'UNTOUCHED'     > "$BASE/outside/secret.txt"
+printf 'UNTOUCHED-DIR' > "$BASE/outside/sub/deep.txt"
+ln -s "$BASE/outside/secret.txt" "$SERVER/hijack.php"   # leaf file symlink → outside
+ln -s "$BASE/outside/sub"        "$SERVER/hijackdir"    # dir symlink → outside
+
 # ── Local project (git repo) ──────────────────────────────────────────────────
 printf "<?php echo 'app v1';" > "$LOCAL/index.php"
 printf '<?php // util v1'      > "$LOCAL/lib/util.php"
@@ -69,6 +80,9 @@ printf 'CREATE TABLE widgets (id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KE
 cp "$SRC/production.sh" "$LOCAL/"            # client lives in the project → must be excluded
 printf '%s' "$TOKEN" > "$LOCAL/.deploy-token"
 printf 'http://127.0.0.1:%s/deploy.php' "$PORT" > "$LOCAL/.deploy-url"
+printf '<?php // replaced' > "$LOCAL/hijack.php"        # archive entry vs. the leaf symlink
+mkdir -p "$LOCAL/hijackdir"
+printf '<?php // replaced' > "$LOCAL/hijackdir/deep.php" # archive entry vs. the dir symlink
 
 git -C "$LOCAL" init -q
 git -C "$LOCAL" add -A
@@ -104,6 +118,10 @@ echo "--- checks (full deploy) ---"
 [[ "$("$PHP" -r "echo md5_file('$SERVER/config.php');")" == "$CFG_HASH_BEFORE" ]]; check "server config.php untouched" $?
 COLS="$("$PHP" -r "\$p=new PDO('mysql:host=$DBHOST;dbname=$DB;charset=utf8mb4','$DBUSER','$DBPASS'); echo implode(',', \$p->query('SHOW COLUMNS FROM widgets')->fetchAll(PDO::FETCH_COLUMN));" 2>/dev/null)"
 [[ "$COLS" == *id* && "$COLS" == *name* ]]; check "migration created table widgets" $?
+[[ "$(cat "$BASE/outside/secret.txt")" == "UNTOUCHED" ]]; check "leaf symlink target outside root NOT overwritten" $?
+[[ -f "$SERVER/hijack.php" && ! -L "$SERVER/hijack.php" && "$(cat "$SERVER/hijack.php")" == "<?php // replaced" ]]; check "hijack.php replaced by a regular file inside root" $?
+[[ "$(cat "$BASE/outside/sub/deep.txt")" == "UNTOUCHED-DIR" ]]; check "dir symlink target outside root NOT written into" $?
+[[ ! -e "$BASE/outside/sub/deep.php" ]]; check "no file leaked through dir symlink" $?
 
 echo
 echo "=== CHANGED DEPLOY (add + delete) ==="
