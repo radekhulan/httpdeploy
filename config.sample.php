@@ -19,9 +19,25 @@ define('DEPLOY_TOKEN', is_file(__DIR__ . '/.deploy-token')
     ? trim(file_get_contents(__DIR__ . '/.deploy-token'))
     : 'CHANGE-ME-TO-A-LONG-RANDOM-STRING');
 
-// ─── Allowed client IPs ───────────────────────────────────────────────────────
-// Only these IPs / CIDR ranges may deploy. Leave the array empty to allow any
-// IP (the token alone then guards the endpoint).
+// ─── Require HTTPS ────────────────────────────────────────────────────────────
+// The deploy token is sent in a request header; over plain HTTP anyone on the
+// network path can read it. By default the endpoint refuses non-TLS requests.
+// Set this to true ONLY for trusted-network / local testing setups.
+// define('DEPLOY_ALLOW_HTTP', true);
+
+// ─── Allowed client IPs ──────────────────────────────────────  ★ RECOMMENDED ─
+// Only these IPs / CIDR ranges may deploy. This is your STRONGEST control and
+// you should set it whenever you can: the endpoint exposes remote code execution
+// to anyone who holds the token, so an empty list means the token is the ONLY
+// thing standing between the internet and your web root. There is no rate limit
+// or lockout — a leaked or guessable token is game over.
+//
+//   • Always-on server / office with a static IP → list it here.
+//   • Dynamic IP → list your ISP's range, a VPN exit IP, or your CI runner's IP.
+//   • Genuinely cannot pin an IP → leave it empty, but then use a long random
+//     token (php -r "echo bin2hex(random_bytes(32));") and keep HTTPS on.
+//
+// Leaving the array empty allows ANY IP (token-only protection — least safe).
 define('DEPLOY_ALLOWED_IPS', [
     // '203.0.113.10',
     // '198.51.100.0/24',
@@ -37,6 +53,15 @@ define('DEPLOY_PROTECTED', [
     // 'logs',
     // 'storage',
 ]);
+
+// ─── Size limits ──────────────────────────────────────────────────────────────
+// Caps that protect the server from an oversized or maliciously compressed
+// package (a tiny "gzip bomb" that inflates to fill the disk). A package over
+// the compressed limit is rejected before unpacking; decompression is aborted
+// once the unpacked size passes the second limit. Raise them if your project is
+// genuinely larger. Defaults (when not defined) are 100 MB / 1024 MB.
+// define('DEPLOY_MAX_PACKAGE_MB',  100);   // max uploaded .tar.gz size
+// define('DEPLOY_MAX_UNPACKED_MB', 1024);  // max size after decompression
 
 // ─── Database (optional – only used by sql/migrate.php) ───────────────────────
 define('DB_HOST',    'localhost');

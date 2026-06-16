@@ -115,9 +115,23 @@ if ($Changed) {
         if ($LASTEXITCODE -ne 0) { throw "git diff (deleted) failed (code $LASTEXITCODE)" }
     }
 
+    $rawCount = @($files).Count + @($deleted).Count
     $files   = $files   | Where-Object { $_ -and -not (Test-Excluded $_) } | Select-Object -Unique
     $deleted = $deleted | Where-Object { $_ -and -not (Test-Excluded $_) } | Select-Object -Unique
-    if (-not $files -and -not $deleted) { throw "No deployable changes ($range)." }
+    if (-not $files -and -not $deleted) {
+        if ($rawCount -gt 0) {
+            # There were changes, but every one of them is on the exclude list
+            # (config, tooling like production.ps1, README, .deployignore paths…).
+            Write-Host "Nothing to deploy in $range." -ForegroundColor Yellow
+            Write-Host "All $rawCount changed file(s) are excluded (config / tooling / .deployignore)." -ForegroundColor Yellow
+            Write-Host "If the change you want to deploy is in an earlier commit, widen the range, e.g.:" -ForegroundColor Yellow
+            Write-Host "    .\production.ps1 -Changed -Since HEAD~2" -ForegroundColor Cyan
+        } else {
+            Write-Host "Nothing to deploy in $range — that commit changed no files." -ForegroundColor Yellow
+            Write-Host "Use -Since <ref> for a wider range, or run without -Changed for a full deploy." -ForegroundColor Yellow
+        }
+        return
+    }
 
     Write-Host "Changes to deploy — $range" -ForegroundColor Cyan
     Write-Host "  upload: $(@($files).Count)   delete: $(@($deleted).Count)"

@@ -122,11 +122,23 @@ if [[ $CHANGED -eq 1 ]]; then
             printf '%s\n' "$rel"
         done | awk '!seen[$0]++'
     }
+    RAW_COUNT=$(( ${#FILES[@]} + ${#DELETED[@]} ))
     mapfile -t FILES   < <(filter_list "${FILES[@]+"${FILES[@]}"}")
     mapfile -t DELETED < <(filter_list "${DELETED[@]+"${DELETED[@]}"}")
 
     if [[ ${#FILES[@]} -eq 0 && ${#DELETED[@]} -eq 0 ]]; then
-        echo "No deployable changes ($RANGE)." >&2; exit 1
+        if [[ $RAW_COUNT -gt 0 ]]; then
+            # There were changes, but every one is on the exclude list
+            # (config, tooling like production.sh, README, .deployignore paths…).
+            echo "Nothing to deploy in $RANGE." >&2
+            echo "All $RAW_COUNT changed file(s) are excluded (config / tooling / .deployignore)." >&2
+            echo "If the change you want is in an earlier commit, widen the range, e.g.:" >&2
+            echo "    ./production.sh --changed --since HEAD~2" >&2
+        else
+            echo "Nothing to deploy in $RANGE — that commit changed no files." >&2
+            echo "Use --since <ref> for a wider range, or run without --changed for a full deploy." >&2
+        fi
+        exit 0
     fi
     echo "Changes to deploy — $RANGE"
     echo "  upload: ${#FILES[@]}   delete: ${#DELETED[@]}"

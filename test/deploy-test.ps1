@@ -58,6 +58,7 @@ Copy-Item (Join-Path $src 'sql\migrate.php') (Join-Path $server 'sql')
 @"
 <?php
 define('DEPLOY_TOKEN', '$token');
+define('DEPLOY_ALLOW_HTTP', true);   // test server runs plain HTTP on localhost
 define('DEPLOY_ALLOWED_IPS', []);
 define('DEPLOY_PROTECTED', ['uploads']);
 define('DB_HOST', '$DbHost');

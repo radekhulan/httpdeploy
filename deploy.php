@@ -44,21 +44,37 @@ function rrmdir($d) {
 /**
  * Decompress a .gz file to $dst. Tries zlib (gzopen, almost always available),
  * then PharData as a fallback. Returns true on success.
+ *
+ * $maxBytes caps the decompressed size: a "gzip bomb" (a tiny package that
+ * inflates to gigabytes) is aborted once the output passes the cap, so it can
+ * never fill the disk. Returns false on overflow as well as on failure.
  */
-function gunzip($src, $dst) {
+function gunzip($src, $dst, $maxBytes) {
     if (function_exists('gzopen')) {
         $in = @gzopen($src, 'rb');
         if ($in) {
             $out = @fopen($dst, 'wb');
             if ($out) {
-                while (!gzeof($in)) { $c = gzread($in, 1 << 20); if ($c === false) break; fwrite($out, $c); }
+                $total = 0;
+                while (!gzeof($in)) {
+                    $c = gzread($in, 1 << 20);
+                    if ($c === false) break;
+                    $total += strlen($c);
+                    if ($total > $maxBytes) { gzclose($in); fclose($out); @unlink($dst); return false; }
+                    fwrite($out, $c);
+                }
                 gzclose($in); fclose($out);
                 if (is_file($dst) && filesize($dst) > 0) return true;
             } else { gzclose($in); }
         }
     }
     if (class_exists('PharData')) {
-        try { (new PharData($src))->decompress(); return is_file($dst); }   // foo.tar.gz → foo.tar
+        try {                                                              // foo.tar.gz → foo.tar
+            (new PharData($src))->decompress();
+            if (!is_file($dst)) return false;
+            if (filesize($dst) > $maxBytes) { @unlink($dst); return false; }   // bomb guard
+            return true;
+        }
         catch (Throwable $e) { /* fall through */ }
     }
     return false;
@@ -133,15 +149,36 @@ if ($allowedIps) {                                   // empty list = allow any I
     if (!$ipAllowed) fail(403, 'Deploy from this IP address is not allowed.');
 }
 
+// ── Require HTTPS ─────────────────────────────────────────────────────────────
+// The token travels in a request header; over plain HTTP anyone on the path can
+// read it. Reject non-TLS connections before the token is ever inspected. Set
+// DEPLOY_ALLOW_HTTP = true in config.php only for trusted-network/testing setups.
+if (!defined('DEPLOY_ALLOW_HTTP') || !DEPLOY_ALLOW_HTTP) {
+    $https = (($_SERVER['HTTPS'] ?? '') !== '' && strtolower($_SERVER['HTTPS']) !== 'off')
+          || strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'
+          || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443;
+    if (!$https) fail(403, 'Deploy requires HTTPS.');
+}
+
 // ── Authorization ─────────────────────────────────────────────────────────────
 if (!defined('DEPLOY_TOKEN') || DEPLOY_TOKEN === '' || DEPLOY_TOKEN === 'CHANGE-ME-TO-A-LONG-RANDOM-STRING')
     fail(500, 'DEPLOY_TOKEN is not configured in config.php');
-$token = $_SERVER['HTTP_X_DEPLOY_TOKEN'] ?? ($_POST['token'] ?? '');
+// Header only: never accept the token from a POST/GET field, where it is far
+// likelier to be captured (request logs, Referer, browser history, …).
+$token = $_SERVER['HTTP_X_DEPLOY_TOKEN'] ?? '';
 if (!is_string($token) || !hash_equals(DEPLOY_TOKEN, $token)) fail(403, 'Invalid deploy token.');
 if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_FILES['package']['tmp_name'])
     || $_FILES['package']['error'] !== UPLOAD_ERR_OK) fail(400, 'Missing uploaded package (field "package").');
 
-$root = __DIR__;
+// ── Size limits (anti gzip-bomb / disk-fill) ──────────────────────────────────
+$maxPkgBytes    = (defined('DEPLOY_MAX_PACKAGE_MB')  ? (int)DEPLOY_MAX_PACKAGE_MB  : 100)  * 1024 * 1024;
+$maxUnpackBytes = (defined('DEPLOY_MAX_UNPACKED_MB') ? (int)DEPLOY_MAX_UNPACKED_MB : 1024) * 1024 * 1024;
+if (($_FILES['package']['size'] ?? 0) > $maxPkgBytes)
+    fail(413, 'Package too large (limit ' . (int)($maxPkgBytes / 1048576) . ' MB; raise DEPLOY_MAX_PACKAGE_MB).');
+
+$root     = __DIR__;
+$rootReal = realpath($root);
+if ($rootReal === false) fail(500, 'Cannot resolve web root.');
 $work = rtrim(sys_get_temp_dir(), '/') . '/deploy_' . bin2hex(random_bytes(5));
 @mkdir($work, 0700, true);
 if (!is_dir($work)) fail(500, 'Cannot create temporary folder.');
@@ -151,9 +188,11 @@ if (!move_uploaded_file($_FILES['package']['tmp_name'], $tarGz)) { rrmdir($work)
 
 // ── Decompress .tar.gz → .tar (zlib, or Phar as fallback) ─────────────────────
 $tar = $work . '/package.tar';
-if (!gunzip($tarGz, $tar)) {
+if (!gunzip($tarGz, $tar, $maxUnpackBytes)) {
     rrmdir($work);
-    fail(500, 'Cannot unpack package: neither zlib (gzopen) nor Phar is available on this server.');
+    fail(500, 'Cannot unpack package: it is corrupt, exceeds the '
+        . (int)($maxUnpackBytes / 1048576) . ' MB unpacked limit (DEPLOY_MAX_UNPACKED_MB), '
+        . 'or neither zlib (gzopen) nor Phar is available on this server.');
 }
 
 // First pass (headers only): a single wrapping folder (e.g. a GitHub API
@@ -198,13 +237,30 @@ $releaseLock = function () use ($lockFile, &$lockCleared) {
 register_shutdown_function($releaseLock);
 
 // ── Sync into the web root (second pass: extract bodies) ──────────────────────
+// Confirm $path resolves to a location strictly inside the web root. The parent
+// directory is expected to exist already (callers create it first); a path that
+// escapes the root — via an absolute target or a symlinked dir inside the root —
+// fails realpath canonicalisation and is rejected. Mirrors the delete branch.
+$insideRoot = function ($path) use ($rootReal) {
+    $realParent = realpath(dirname($path));
+    if ($realParent === false) return false;
+    if ($realParent === $rootReal) return true;
+    return strncmp($realParent, $rootReal . DIRECTORY_SEPARATOR, strlen($rootReal) + 1) === 0;
+};
+
 $copied = 0;
-tarEach($tar, true, function ($rel, $isDir, $data) use (&$copied, $wrap, $isExcluded, $root) {
+tarEach($tar, true, function ($rel, $isDir, $data) use (&$copied, $wrap, $isExcluded, $insideRoot, $root) {
     if ($wrap !== '' && strpos($rel, $wrap) === 0) $rel = substr($rel, strlen($wrap));
+    // Relative paths only: reject traversal, leading slash and Windows drive letters.
     if ($rel === '' || strpos($rel, '..') !== false || $isExcluded($rel)) return;
+    if ($rel[0] === '/' || preg_match('#^[A-Za-z]:#', $rel)) return;
     $dest = $root . '/' . $rel;
-    if ($isDir) { if (!is_dir($dest)) @mkdir($dest, 0755, true); return; }
     if (!is_dir(dirname($dest))) @mkdir(dirname($dest), 0755, true);
+    if (!$insideRoot($dest)) return;                 // parent escaped the root → skip
+    if ($isDir) {
+        if (!is_dir($dest)) @mkdir($dest, 0755);
+        return;
+    }
     if (@file_put_contents($dest, (string) $data) !== false) $copied++;
 });
 
@@ -212,7 +268,6 @@ tarEach($tar, true, function ($rel, $isDir, $data) use (&$copied, $wrap, $isExcl
 $deleted = 0; $delSkipped = 0;
 $delList = trim((string)($_POST['delete'] ?? ''));
 if ($delList !== '') {
-    $rootReal = realpath($root);
     foreach (preg_split('/\r\n|\r|\n/', $delList) as $rel) {
         $rel = trim(str_replace('\\', '/', $rel));
         if ($rel === '' || strpos($rel, '..') !== false || $isExcluded($rel)) { $delSkipped++; continue; }

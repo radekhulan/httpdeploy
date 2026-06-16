@@ -39,6 +39,7 @@ cp "$SRC/sql/migrate.php"  "$SERVER/sql/"
 cat > "$SERVER/config.php" <<PHP
 <?php
 define('DEPLOY_TOKEN', '$TOKEN');
+define('DEPLOY_ALLOW_HTTP', true);   // test server runs plain HTTP on localhost
 define('DEPLOY_ALLOWED_IPS', []);
 define('DEPLOY_PROTECTED', ['uploads']);
 define('DB_HOST', '$DBHOST');

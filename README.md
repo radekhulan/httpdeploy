@@ -85,10 +85,21 @@ Uprav `config.php`:
   ```
   Můžeš ho nechat přímo zde, nebo dát do souboru `.deploy-token` vedle
   `config.php` (git-ignored) — pokud existuje, má přednost.
-* **`DEPLOY_ALLOWED_IPS`** — volitelný seznam povolených IP / CIDR. Nech prázdné,
-  pokud chceš spoléhat jen na token. Omezení na firemní/domácí IP vřele doporučeno.
+* **`DEPLOY_ALLOWED_IPS`** — ⭐ **tvoje nejsilnější ochrana, nastav ji, kdykoliv
+  to jde.** Seznam povolených IP / CIDR. Endpoint umožní vzdálené spuštění kódu
+  komukoliv, kdo má token, a **není zde žádný rate-limit ani lockout** — únik
+  nebo uhodnutí tokenu znamená kompromitaci serveru. Pokud máš statickou IP
+  (server, kancelář, VPN, CI runner), uveď ji sem. Prázdný seznam = povolena
+  **jakákoliv IP** (jen token, nejméně bezpečné) — pak nasaď dlouhý náhodný token
+  a měj zapnuté HTTPS.
 * **`DEPLOY_PROTECTED`** — relativní cesty (uploady, logy, cache…), které deploy
   nikdy nesmí přepsat ani smazat.
+* **`DEPLOY_ALLOW_HTTP`** — ve výchozím stavu endpoint **odmítá nešifrované HTTP**
+  (token by jinak šel po síti v plaintextu). Nastav na `true` jen pro
+  důvěryhodnou síť / lokální testy.
+* **`DEPLOY_MAX_PACKAGE_MB` / `DEPLOY_MAX_UNPACKED_MB`** — stropy proti přílišnému
+  nebo škodlivě komprimovanému balíčku („gzip bomba"). Výchozí 100 MB / 1024 MB;
+  zvyš, pokud je projekt větší.
 * **`DB_*`** — potřeba jen pokud používáš migrace.
 
 Stejný `config.php` musí existovat i **na serveru** (s vlastními DB přihlašovacími
@@ -303,11 +314,16 @@ nic a databázi nechá nedotčenou.
 
 ## Bezpečnost
 
-* **Používej HTTPS.** Token putuje v hlavičce — nikdy nenasazuj přes prosté HTTP.
-* **Omez podle IP**, kdykoliv to jde (`DEPLOY_ALLOWED_IPS`). Token je pojistka,
-  ne jediná obranná linie.
+* **HTTPS je povinné.** Token putuje v hlavičce a endpoint **ve výchozím stavu
+  odmítá HTTP** (lze vypnout přes `DEPLOY_ALLOW_HTTP`, nedoporučeno).
+* **⭐ Omez podle IP, kdykoliv to jde (`DEPLOY_ALLOWED_IPS`) — to je nejsilnější
+  ochrana.** Není žádný rate-limit ani lockout, takže s prázdným seznamem je token
+  jediná bariéra mezi internetem a tvým web rootem. Omezení na pevnou IP
+  (server / kancelář / VPN / CI runner) sníží plochu útoku řádově.
+* **Token ber jako heslo.** Posílá se jen v hlavičce `X-Deploy-Token` (ne jako
+  POST pole). Použij dlouhý náhodný (`random_bytes(32)`); při úniku ihned rotuj.
 * **Drž `deploy.php` za tokenem.** Kdokoliv, kdo umí poslat platný token, ti může
-  přepsat web root. Ber token jako heslo; při úniku ho rotuj.
+  přepsat web root.
 * `config.php` a `.deploy-token` jsou git-ignored — drž je mimo repozitář.
 * Na prostředích, kam nenasazuješ, zvaž odstranění/přejmenování `deploy.php`.
 
@@ -443,10 +459,20 @@ Edit `config.php`:
   ```
   You can keep it inline, or put it in a `.deploy-token` file next to
   `config.php` (git-ignored) — if present, that file wins.
-* **`DEPLOY_ALLOWED_IPS`** — optional IP / CIDR allow-list. Leave empty to rely
-  on the token alone. Restricting to your office/home IP is strongly recommended.
+* **`DEPLOY_ALLOWED_IPS`** — ⭐ **your strongest control; set it whenever you
+  can.** IP / CIDR allow-list. The endpoint grants remote code execution to
+  anyone holding the token, and there is **no rate limit or lockout** — a leaked
+  or guessed token means a compromised server. If you have a static IP (server,
+  office, VPN, CI runner), list it here. An empty list allows **any IP**
+  (token-only, least safe) — then use a long random token and keep HTTPS on.
 * **`DEPLOY_PROTECTED`** — relative paths (uploads, logs, caches…) that a deploy
   must never overwrite or delete.
+* **`DEPLOY_ALLOW_HTTP`** — the endpoint **refuses plain HTTP by default** (the
+  token would otherwise cross the network in cleartext). Set to `true` only for
+  trusted-network / local testing.
+* **`DEPLOY_MAX_PACKAGE_MB` / `DEPLOY_MAX_UNPACKED_MB`** — caps against an
+  oversized or maliciously compressed package (a "gzip bomb"). Defaults
+  100 MB / 1024 MB; raise them if your project is genuinely larger.
 * **`DB_*`** — only needed if you use migrations.
 
 The same `config.php` must exist **on the server** too (with the server's own
@@ -659,11 +685,18 @@ nothing and leaves the database untouched.
 
 ## Security notes
 
-* **Use HTTPS.** The token travels in a header — never deploy over plain HTTP.
-* **Restrict by IP** whenever you can (`DEPLOY_ALLOWED_IPS`). The token is the
-  fallback, not the only line of defense.
+* **HTTPS is mandatory.** The token travels in a header and the endpoint
+  **refuses plain HTTP by default** (override with `DEPLOY_ALLOW_HTTP`, not
+  recommended).
+* **⭐ Restrict by IP whenever you can (`DEPLOY_ALLOWED_IPS`) — it's the strongest
+  control.** There is no rate limit or lockout, so with an empty list the token
+  is the only barrier between the internet and your web root. Pinning a fixed IP
+  (server / office / VPN / CI runner) cuts the attack surface dramatically.
+* **Treat the token like a password.** It is sent only in the `X-Deploy-Token`
+  header (not as a POST field). Use a long random one (`random_bytes(32)`) and
+  rotate it immediately if leaked.
 * **Keep `deploy.php` behind the token.** Anyone who can POST a valid token can
-  overwrite your web root. Treat the token like a password; rotate it if leaked.
+  overwrite your web root.
 * `config.php` and `.deploy-token` are git-ignored — keep them out of your repo.
 * Consider removing/renaming `deploy.php` on environments where you don't deploy.
 
