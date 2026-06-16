@@ -1,22 +1,26 @@
 <!DOCTYPE html>
 <!--
-  Example maintenance page served while a deploy is in progress.
+  CZ: Ukázková stránka údržby, která se servíruje po dobu nasazení.
+      Zkopíruj ji do kořene projektu a servíruj ji, dokud existuje semafor
+      (.deploy-lock). Viz README ("Semafor údržby") pro pár řádků PHP /
+      web.config / .htaccess, které ji napojí. Je to jeden soběstačný soubor
+      (žádné externí CSS/JS/obrázky), aby fungoval i uprostřed nasazení, kdy
+      mohou ostatní assety chvíli chybět.
 
-  Copy this file into your project root and serve it whenever the deploy
-  semaphore (.deploy-lock) is present. See the README ("Maintenance semaphore")
-  for the few lines of PHP / web.config that hook it up.
-
-  It is a single self-contained file (no external CSS/JS/images) so it still
-  works even mid-deploy, when other assets may momentarily be missing.
+  EN: Example maintenance page served while a deploy is in progress.
+      Copy it into your project root and serve it whenever the deploy semaphore
+      (.deploy-lock) is present. See the README ("Maintenance semaphore") for the
+      few lines of PHP / web.config / .htaccess that hook it up. It is a single
+      self-contained file (no external CSS/JS/images) so it works even mid-deploy.
 -->
-<html lang="en">
+<html lang="cs">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <!-- Re-check every 10 s; once the deploy is done the real site loads. -->
+  <!-- Re-check / znovu načti každých 10 s; po dokončení se načte ostrý web. -->
   <meta http-equiv="refresh" content="10">
-  <title>Back in a moment</title>
+  <title>Hned jsme zpět · We'll be right back</title>
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -40,20 +44,24 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
     h1 { margin: 0 0 12px; font-size: 22px; }
-    p  { margin: 0; color: #5b6573; }
+    p  { margin: 0 0 4px; color: #5b6573; }
+    p.en { margin-top: 16px; color: #8a93a2; font-size: 15px; }
+    p.en .h { display: block; color: inherit; font-size: 17px; margin-bottom: 2px; }
     @media (prefers-color-scheme: dark) {
       body { color: #e6e9ee; background: #0f1419; }
       .card { background: #161b22; border-color: #2a313c; box-shadow: none; }
       p { color: #9aa4b2; }
+      p.en { color: #6b7480; }
       .spinner { border-color: #2a313c; border-top-color: #3b82f6; }
     }
   </style>
 </head>
 <body>
   <main class="card">
-    <div class="spinner" role="status" aria-label="Updating"></div>
-    <h1>We'll be right back</h1>
-    <p>The site is being updated and will return in a few seconds. This page refreshes automatically.</p>
+    <div class="spinner" role="status" aria-label="Probíhá aktualizace · Updating"></div>
+    <h1 lang="cs">Hned jsme zpět</h1>
+    <p lang="cs">Web se právě aktualizuje a za pár vteřin bude zpět. Tato stránka se obnoví sama.</p>
+    <p class="en" lang="en"><span class="h">We'll be right back</span>The site is being updated and will return in a few seconds. This page refreshes automatically.</p>
   </main>
 </body>
 </html>
