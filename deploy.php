@@ -26,7 +26,12 @@
  * Author: Radek Hulán – https://mywebdesign.cz/
  */
 
-require_once __DIR__ . '/config.php';
+// Where THIS endpoint loads its own config (DEPLOY_TOKEN, DB creds…) from. Move it
+// (e.g. to a subdir: 'includes/config.php') and the protected-paths list below
+// tracks it automatically — so a deploy can never overwrite the file it reads its
+// own token/credentials from. Keep this in sync with the require path on one line.
+$deployConfig = 'config.php';
+require_once __DIR__ . '/' . $deployConfig;
 header('Content-Type: text/plain; charset=utf-8');
 @set_time_limit(120);
 
@@ -210,7 +215,7 @@ if (count($tops) === 1) {
 
 // ── Protected paths (never overwritten, never deleted) ────────────────────────
 $protected = array_merge(
-    ['config.php', '.deploy-token', '.deployignore', '.deploy-lock', '.git', '.github', '.svn'],
+    [$deployConfig, '.deploy-token', '.deployignore', '.deploy-lock', '.git', '.github', '.svn'],
     defined('DEPLOY_PROTECTED') ? DEPLOY_PROTECTED : []
 );
 $isExcluded = function ($rel) use ($protected) {

@@ -185,6 +185,7 @@ než cokoli odešleš.
 | `-Changed`      | `--changed`      | Nasadí jen soubory změněné posledním commitem     |
 | `-Since <ref>`  | `--since <ref>`  | S `-Changed`: rozsah `<ref>..HEAD`                |
 | `-NoMigrate`    | `--no-migrate`   | Přeskočí migrace                                  |
+| `-NoGitIgnore`  | `--no-gitignore` | Nerespektovat `.gitignore` (nahraje i ignorované) |
 | `-DryRun`       | `--dry-run`      | Jen vypíše, nic nenahraje                         |
 
 ---
@@ -195,8 +196,21 @@ Klient nikdy nenahrává vlastní nástroje (`production.*`, `config.php`,
 `config.sample.php`, `README.md`), VCS složky (`.git`, `.github`, `.svn`) ani
 tajné soubory (`.deploy-token`, `.deploy-url`).
 
-Pro výjimky specifické pro projekt přidej do kořene soubor **`.deployignore`** —
-jedna cesta nebo prefix složky na řádek (`#` uvozuje komentář):
+**`.gitignore` se respektuje automaticky.** Pokud je projekt git repozitář, vyloučí
+se z uploadu vše, co git ignoruje (typicky `config.php`/tajné soubory, logy,
+`uploads`, cache, build výstup) — ignorovaný soubor se tak nikdy nenahraje ani
+nepřepíše svůj produkční protějšek. Vypneš to přepínačem `-NoGitIgnore` /
+`--no-gitignore`.
+
+> ⚠️ **Pozor na neukotvená pravidla v `.gitignore`.** Vzor `log/` (bez úvodního
+> lomítka) odpovídá složce `log` **v jakékoli hloubce** — na Windows i bez ohledu
+> na velikost písmen — takže může nechtěně chytit třeba `vendor/.../Log/`
+> a vyhodit ji z deploye. Pro jen kořenovou složku piš `/log/`. Ověř si
+> `git ls-files --others --ignored --exclude-standard --directory`, co se vyloučí.
+
+Pro výjimky specifické pro projekt (mimo `.gitignore`, nebo když repo `.gitignore`
+nemá) přidej do kořene soubor **`.deployignore`** — jedna cesta nebo prefix složky
+na řádek (`#` uvozuje komentář):
 
 ```
 # .deployignore
@@ -557,6 +571,7 @@ Tip: confirm the range with `--dry-run` (PowerShell: `-DryRun`) before sending.
 | `-Changed`      | `--changed`      | Deploy only files changed by the last commit     |
 | `-Since <ref>`  | `--since <ref>`  | With `-Changed`: range `<ref>..HEAD`             |
 | `-NoMigrate`    | `--no-migrate`   | Skip running migrations                          |
+| `-NoGitIgnore`  | `--no-gitignore` | Do not honor `.gitignore` (upload ignored files) |
 | `-DryRun`       | `--dry-run`      | Print only, upload nothing                       |
 
 ---
@@ -567,8 +582,21 @@ The client never uploads its own tooling (`production.*`, `config.php`,
 `config.sample.php`, `README.md`), the VCS folders (`.git`, `.github`, `.svn`)
 or the secret files (`.deploy-token`, `.deploy-url`).
 
-For project-specific exclusions, add a **`.deployignore`** file to the root —
-one path or directory prefix per line (`#` starts a comment):
+**`.gitignore` is honored automatically.** In a git work tree, everything git
+ignores (typically `config.php`/secrets, logs, `uploads`, caches, build output)
+is excluded from the upload too — so an ignored file is never shipped and can
+never overwrite its production counterpart. Turn it off with `-NoGitIgnore` /
+`--no-gitignore`.
+
+> ⚠️ **Beware unanchored `.gitignore` rules.** A pattern like `log/` (no leading
+> slash) matches a `log` directory **at any depth** — and on Windows regardless of
+> case — so it can accidentally catch e.g. `vendor/.../Log/` and drop it from the
+> deploy. Anchor it as `/log/` to mean the root folder only. Check what will be
+> excluded with `git ls-files --others --ignored --exclude-standard --directory`.
+
+For project-specific exclusions (outside `.gitignore`, or when the repo has no
+`.gitignore`), add a **`.deployignore`** file to the root — one path or directory
+prefix per line (`#` starts a comment):
 
 ```
 # .deployignore

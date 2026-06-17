@@ -12,7 +12,13 @@
 #   .\production.ps1 -Changed -Since HEAD~2  # files changed over the last 2 commits
 #   .\production.ps1 -Changed -Since v1.2  # files changed from any ref (tag/SHA/branch) to HEAD
 #   .\production.ps1 -Changed -DryRun      # only print what would be sent/deleted
+#   .\production.ps1 -NoGitIgnore          # do NOT skip .gitignored paths
 #   .\production.ps1 -Url https://staging.example.com/deploy.php
+#
+# Excludes: in a git work tree everything in .gitignore is skipped automatically
+#           (so secrets like config.php, logs, uploads, build output never get
+#           shipped); add non-git excludes in `.deployignore`. -NoGitIgnore turns
+#           the .gitignore handling off for projects that deploy a gitignored path.
 #
 # Deploy URL: pass -Url, or put it in a `.deploy-url` file in the project root,
 #             otherwise you are prompted.
@@ -29,6 +35,7 @@ param(
     [switch]$NoMigrate,
     [switch]$Changed,
     [string]$Since,
+    [switch]$NoGitIgnore,
     [Alias('WhatIf')]
     [switch]$DryRun
 )
@@ -56,8 +63,9 @@ if (-not $Token) { $Token = Read-Host "Deploy token" }
 if (-not $Token) { throw "Missing deploy token." }
 
 # ── Excludes — never uploaded ─────────────────────────────────────────────────
-# Built-in: VCS folders + HTTPDeploy's own tooling. Add project-specific paths
-# (uploads, logs, caches, …) one per line to a `.deployignore` file in the root.
+# Built-in: VCS folders + HTTPDeploy's own tooling. Everything in .gitignore is
+# added automatically (see below). Add any non-git excludes (or paths in a repo
+# that has no .gitignore) one per line to a `.deployignore` file in the root.
 $excludeRel = @(".git", ".github", ".svn", ".deploy-token", ".deploy-url",
                 ".deployignore", "config.php", "config.sample.php",
                 "production.ps1", "production.sh", "publish.cmd", "README.md")
@@ -70,6 +78,32 @@ if (Test-Path $ignoreFile) {
         }
     }
 }
+
+# ── Also honor .gitignore ──────────────────────────────────────────────────────
+# In a git work tree, every path git ignores (config.php / secrets, logs, uploads,
+# caches, build output…) is excluded from the deploy too — so a gitignored file
+# can never be shipped or overwrite its production counterpart. .deployignore still
+# adds non-git excludes on top. Pass -NoGitIgnore for the rare project that deploys
+# a gitignored path on purpose (e.g. a vendor/ dir you don't commit but do upload).
+# --directory collapses a fully-ignored folder to one entry instead of listing
+# every file under it.
+if (-not $NoGitIgnore) {
+    git -C $root rev-parse --is-inside-work-tree *> $null
+    if ($LASTEXITCODE -eq 0) {
+        $gitIgnored = git -C $root ls-files --others --ignored --exclude-standard --directory
+        if ($LASTEXITCODE -eq 0 -and $gitIgnored) {
+            $added = 0
+            foreach ($g in $gitIgnored) {
+                $g = (($g -replace '\\', '/').TrimEnd('/')).Trim()
+                if ($g -and $excludeRel -notcontains $g) { $excludeRel += $g; $added++ }
+            }
+            if ($added) {
+                Write-Host "Honoring .gitignore: $added path(s) excluded (use -NoGitIgnore to override)." -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+
 function Test-Excluded([string]$rel) {
     $rel = ($rel -replace '\\', '/').Trim()
     foreach ($ex in $excludeRel) {
